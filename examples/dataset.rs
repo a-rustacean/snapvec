@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::Mmap;
-use ndarray::{Array1, Array2, Axis};
+use ndarray::{Array1, Array2, ArrayBase, Axis, Data, Ix2};
 use ordered_float::OrderedFloat;
 use rand::rngs::StdRng;
 use rand::seq::index::sample;
@@ -17,30 +17,78 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
+/// Main entry point for vector search benchmarking
 fn main() -> Result<()> {
-    // Configuration - match these to your Python script settings
-    let file_path = "dataset.f32";
-    let dims: u16 = 768;
-    let num_vectors: usize = 1_000_000;
-    let num_queries = 100_000;
-    let top_k = 5;
+    // ==============================
+    // Configuration
+    // ==============================
+    const FILE_PATH: &str = "dataset.f32";
+    const DIMS: u16 = 768;
+    const NUM_VECTORS: usize = 1_000_000;
+    const NUM_QUERIES: usize = 100_000;
+    const TOP_K: u16 = 5;
 
-    // hnsw config
-    let m = 16;
-    let m0 = 32;
-    let max_level = 10;
-    let ef_construction = 64;
-    let ef_search = 64;
-    let quantization = Quantization::I8;
+    // HNSW Configuration
+    const M: u16 = 16;
+    const M0: u16 = 32;
+    const MAX_LEVEL: u8 = 10;
+    const EF_CONSTRUCTION: u16 = 64;
+    const EF_SEARCH: u16 = 64;
+    const QUANTIZATION: Quantization = Quantization::I8;
 
     let mut rng = StdRng::from_seed([1; 32]);
 
-    // Memory-map the file for zero-copy access
+    // ==============================
+    // Data Loading
+    // ==============================
+    let vectors = load_vectors(FILE_PATH, NUM_VECTORS, DIMS)?;
+
+    // ==============================
+    // Query Generation & Ground Truth
+    // ==============================
+    let (queries, brute_force_results) =
+        generate_queries_and_ground_truth(&vectors, NUM_QUERIES, TOP_K, &mut rng);
+
+    // ==============================
+    // Index Construction
+    // ==============================
+    let options = Options {
+        m: M,
+        m0: M0,
+        dims: DIMS,
+        max_level: MAX_LEVEL,
+        quantization: QUANTIZATION,
+        metric: DistanceMetricKind::Cos,
+    };
+
+    let mut graph = Graph::new(options);
+    build_index(&vectors, &mut graph, EF_CONSTRUCTION, NUM_VECTORS);
+
+    // ==============================
+    // Search & Evaluation
+    // ==============================
+    let hnsw_results = search_queries(&queries, &graph, EF_SEARCH, TOP_K);
+    let recall_percent = calculate_recall(&brute_force_results, &hnsw_results, TOP_K);
+    let qps = measure_throughput(&queries, &graph, EF_SEARCH, TOP_K, NUM_QUERIES);
+
+    // ==============================
+    // Results Reporting
+    // ==============================
+    print_results(recall_percent, qps);
+
+    Ok(())
+}
+
+/// Load vectors from binary file into memory-mapped array
+fn load_vectors(file_path: &str, num_vectors: usize, dims: u16) -> Result<Array2<f32>> {
+    let progress = ProgressBar::new(100).with_style(progress_style("Loading vectors"));
     let file = File::open(Path::new(file_path)).context("Failed to open file")?;
-    let mmap = unsafe { Mmap::map(&file) }.context("Memory mapping failed")?;
+
+    // Memory map file for efficient access
+    let mmap = unsafe { Mmap::map(&file).context("Memory mapping failed")? };
+    let expected_bytes = num_vectors * dims as usize * std::mem::size_of::<f32>();
 
     // Validate file size
-    let expected_bytes = num_vectors * dims as usize * std::mem::size_of::<f32>();
     if mmap.len() != expected_bytes {
         anyhow::bail!(
             "File size mismatch: expected {} bytes, found {}",
@@ -49,237 +97,111 @@ fn main() -> Result<()> {
         );
     }
 
-    // Interpret the bytes as f32 array (zero-copy)
+    // Convert bytes to f32 slice (zero-copy)
     let float_slice: &[f32] = bytemuck::cast_slice(&mmap);
+    progress.inc(50); // Simulate mid-load progress
 
-    // Create progress bar for loading vectors
-    let pb_load = ProgressBar::new(100);
-    pb_load.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] Loading vectors ({percent}%) ETA: {eta}")
-            .unwrap()
-            .progress_chars("#>-"),
-    );
-
-    // Simulate progress for loading
-    for i in 1..=100 {
-        pb_load.set_position(i);
-        if i == 50 {
-            // Reshape to 2D array [num_vectors, vector_dim] at halfway point
-            let _vectors_temp =
-                Array2::from_shape_vec((num_vectors, dims as usize), float_slice.to_vec())
-                    .context("Shape mismatch during array conversion")?;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-
-    // Actually create the vectors array
+    // Create 2D array [num_vectors, vector_dim]
     let vectors = Array2::from_shape_vec((num_vectors, dims as usize), float_slice.to_vec())
         .context("Shape mismatch during array conversion")?;
 
-    pb_load.finish_with_message("✓ Vectors loaded successfully!");
-
-    let (queries, brute_force_results) =
-        top_closest_vectors(&vectors, num_queries, top_k, &mut rng);
-
-    let options = Options {
-        m,
-        m0,
-        dims,
-        max_level,
-        quantization,
-        metric: DistanceMetricKind::Cos,
-    };
-
-    let mut graph = Graph::new(options);
-
-    // Create progress bar for indexing
-    let pb_index = ProgressBar::new(num_vectors as u64);
-    pb_index.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} Indexing vectors ({percent}%) ETA: {eta} [{per_sec}]")
-            .unwrap()
-            .progress_chars("#>-"),
-    );
-
-    let indexing_start = Instant::now();
-    let mut indexed_counter = 0;
-    let pb_clone = pb_index.clone();
-
-    vectors.axis_iter(Axis(0)).for_each(|vector| {
-        graph.insert(vector.as_slice().unwrap(), ef_construction);
-        indexed_counter += 1;
-        if indexed_counter % 1_000 == 0 {
-            pb_clone.set_position(indexed_counter);
-        }
-    });
-
-    pb_index.finish_with_message(format!(
-        "✓ Indexed {} vectors in {:?}!",
-        num_vectors,
-        indexing_start.elapsed()
-    ));
-
-    let hnsw_results = queries
-        .axis_iter(Axis(0))
-        .map(|query| graph.search(query.as_slice().unwrap(), ef_search, top_k as u16))
-        .collect::<Vec<_>>();
-
-    let mut total_recall = 0;
-
-    for (brute_force_results, hnsw_results) in brute_force_results.into_iter().zip(hnsw_results) {
-        let brute_force_ids =
-            HashSet::<u32>::from_iter(brute_force_results.into_iter().map(|(id, _)| id as u32));
-        let hnsw_ids = HashSet::<u32>::from_iter(
-            hnsw_results
-                .into_iter()
-                .map(|result| result.node.0.get() - 1),
-        );
-        total_recall += brute_force_ids.intersection(&hnsw_ids).count();
-    }
-
-    let perfect_recall = top_k * num_queries;
-
-    let recall_percent = (total_recall as f32 / perfect_recall as f32) * 100.0;
-
-    // Create progress bar for performance evaluation
-    let pb_perf = ProgressBar::new(num_queries as u64);
-    pb_perf.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} Evaluating search performance ({percent}%) [{per_sec}]")
-            .unwrap()
-            .progress_chars("#>-"),
-    );
-
-    let start = Instant::now();
-    let perf_counter = Arc::new(AtomicUsize::new(0));
-    let pb_perf_clone = pb_perf.clone();
-
-    queries.axis_iter(Axis(0)).par_bridge().for_each(|query| {
-        black_box(graph.search(query.as_slice().unwrap(), ef_search, top_k as u16));
-        let count = perf_counter.fetch_add(1, Ordering::Relaxed) + 1;
-        pb_perf_clone.set_position(count as u64);
-    });
-
-    let elapsed = start.elapsed();
-    let qps = num_queries as f32 / elapsed.as_secs_f32();
-
-    pb_perf.finish_with_message("✓ Performance evaluation complete!");
-
-    // Print final results clearly
-    println!();
-    println!("=== BENCHMARK RESULTS ===");
-    println!("Recall: {:.2}%", recall_percent);
-    println!("QPS (Queries Per Second): {:.2}", qps);
-    println!("=========================");
-
-    Ok(())
+    progress.finish_with_message("✓ Vectors loaded successfully!");
+    Ok(vectors)
 }
 
-fn top_closest_vectors(
+/// Generate perturbed queries and compute ground truth results
+fn generate_queries_and_ground_truth(
     data: &Array2<f32>,
     num_queries: usize,
-    top_k: usize,
+    top_k: u16,
     rng: &mut impl Rng,
 ) -> (Array2<f32>, Vec<Vec<(usize, f32)>>) {
-    // Progress bar for generating queries
-    let pb_queries = ProgressBar::new(num_queries as u64);
-    pb_queries.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} Generating queries ({percent}%) ETA: {eta}")
-            .unwrap()
-            .progress_chars("#>-"),
-    );
+    let pb_queries =
+        ProgressBar::new(num_queries as u64).with_style(progress_style("Generating queries"));
 
-    // 1. Randomly select query indices from corpus
+    // Randomly select and perturb queries
     let query_indices = sample(rng, data.nrows(), num_queries).into_vec();
     let mut queries = Array2::<f32>::zeros((num_queries, data.ncols()));
 
-    // 2. Perturb selected queries and clamp to [-1, 1]
     for (i, &idx) in query_indices.iter().enumerate() {
         let original = data.row(idx);
         let mut perturbed = Array1::zeros(data.ncols());
 
         for j in 0..data.ncols() {
-            // Add Gaussian noise (stddev=0.1) and clamp values
             perturbed[j] = (original[j] + rng.random_range(-0.1..0.1)).clamp(-1.0, 1.0);
         }
         queries.row_mut(i).assign(&perturbed);
-        pb_queries.set_position((i + 1) as u64);
+        pb_queries.inc(1);
     }
     pb_queries.finish_with_message("✓ Queries generated successfully!");
 
-    // Progress bar for computing corpus norms
-    let pb_norms = ProgressBar::new(data.nrows() as u64);
-    pb_norms.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} Computing corpus norms ({percent}%) ETA: {eta} [{per_sec}]")
-            .unwrap()
-            .progress_chars("#>-"),
-    );
+    // Precompute corpus norms in parallel
+    let pb_norms =
+        ProgressBar::new(data.nrows() as u64).with_style(progress_style("Computing corpus norms"));
+    let corpus_norms = compute_corpus_norms(data, &pb_norms);
+    pb_norms.finish_with_message("✓ Corpus norms computed successfully!");
 
-    // 3. Precompute norms for all vectors in corpus (once)
-    let norms_counter = Arc::new(AtomicUsize::new(0));
-    let pb_norms_clone = pb_norms.clone();
-    let corpus_norms = data
-        .axis_iter(Axis(0))
+    // Compute ground truth results
+    let pb_search = ProgressBar::new(num_queries as u64)
+        .with_style(progress_style("Computing brute force results"));
+    let results = brute_force_search(&queries, data, &corpus_norms, top_k, &pb_search);
+    pb_search.finish_with_message("✓ Brute force computation complete!");
+
+    (queries, results)
+}
+
+/// Compute L2 norms for all vectors in corpus
+fn compute_corpus_norms<S>(data: &ArrayBase<S, Ix2>, progress: &ProgressBar) -> Array1<f32>
+where
+    S: Data<Elem = f32>,
+{
+    let counter = Arc::new(AtomicUsize::new(0));
+    let progress_clone = progress.clone();
+
+    data.axis_iter(Axis(0))
         .par_bridge()
         .map(|row| {
             let norm = row.dot(&row).sqrt();
-            let count = norms_counter.fetch_add(1, Ordering::Relaxed) + 1;
-            pb_norms_clone.set_position(count as u64);
+            let count = counter.fetch_add(1, Ordering::Relaxed) + 1;
+            progress_clone.set_position(count as u64);
             norm
         })
-        .collect::<Vec<_>>();
-    let corpus_norms = Array1::from_vec(corpus_norms);
-    pb_norms.finish_with_message("✓ Corpus norms computed successfully!");
+        .collect::<Vec<_>>()
+        .into()
+}
 
-    // Progress bar for brute force search
-    let pb_search = ProgressBar::new(num_queries as u64);
-    pb_search.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} Computing brute force results ({percent}%) ETA: {eta} [{per_sec}]")
-            .unwrap()
-            .progress_chars("#>-"),
-    );
+/// Brute-force search for top-k nearest neighbors
+fn brute_force_search(
+    queries: &Array2<f32>,
+    corpus: &Array2<f32>,
+    corpus_norms: &Array1<f32>,
+    top_k: u16,
+    progress: &ProgressBar,
+) -> Vec<Vec<(usize, f32)>> {
+    let mut all_results = Vec::with_capacity(queries.nrows());
+    let batch_size = calculate_batch_size(queries.nrows());
 
-    // 4. Process queries in batches to avoid memory explosion
-    // Dynamically adjust batch size based on available memory and query count
-    let batch_size = if num_queries <= 1000 {
-        num_queries // Process all at once for small query sets
-    } else if num_queries <= 10000 {
-        500 // Smaller batches for medium query sets
-    } else {
-        200 // Very small batches for large query sets to minimize memory usage
-    };
-    let mut all_results = Vec::with_capacity(num_queries);
+    for batch_start in (0..queries.nrows()).step_by(batch_size) {
+        let batch_end = (batch_start + batch_size).min(queries.nrows());
+        let batch = queries.slice(ndarray::s![batch_start..batch_end, ..]);
 
-    for batch_start in (0..num_queries).step_by(batch_size) {
-        let batch_end = (batch_start + batch_size).min(num_queries);
-        let current_batch_size = batch_end - batch_start;
-
-        // Extract current batch of queries
-        let batch_queries = queries.slice(ndarray::s![batch_start..batch_end, ..]);
-
-        // Compute norms for current batch
-        let batch_query_norms = batch_queries
+        // Compute query norms for current batch
+        let query_norms: Vec<f32> = batch
             .axis_iter(Axis(0))
             .map(|row| row.dot(&row).sqrt())
-            .collect::<Vec<f32>>();
+            .collect();
 
-        // Compute dot products for current batch only
-        let batch_dot_products = batch_queries.dot(&data.t());
+        // Compute dot products for current batch
+        let dot_products = batch.dot(&corpus.t());
 
-        // Find top-k matches for each query in current batch
-        let batch_results = (0..current_batch_size)
+        // Process each query in batch
+        let batch_results: Vec<_> = (0..batch.nrows())
             .into_par_iter()
             .map(|i| {
-                // Use MAX-heap to keep highest cosine similarities
-                let mut heap: BinaryHeap<(Reverse<OrderedFloat<f32>>, usize)> =
-                    BinaryHeap::with_capacity(top_k + 1);
-                let q_norm = batch_query_norms[i];
+                let mut heap = BinaryHeap::with_capacity(top_k as usize + 1);
+                let q_norm = query_norms[i];
 
-                for (j, (&dot, &c_norm)) in batch_dot_products
+                for (j, (&dot, &c_norm)) in dot_products
                     .row(i)
                     .iter()
                     .zip(corpus_norms.iter())
@@ -291,38 +213,141 @@ fn top_closest_vectors(
                         dot / (q_norm * c_norm)
                     };
 
-                    // Use max-heap for cosine similarity (higher is better)
-                    // Keep the LOWEST scoring items to maintain top-k highest
-                    if heap.len() < top_k {
-                        heap.push((Reverse(OrderedFloat(cos_sim)), j));
-                    } else {
-                        let entry = (Reverse(OrderedFloat(cos_sim)), j);
-                        // If this similarity is higher than the lowest in our top-k
-                        if entry.0.0 > heap.peek().unwrap().0.0 {
-                            heap.pop();
-                            heap.push(entry);
-                        }
+                    // Maintain top-k in max-heap using reverse ordering
+                    heap.push(Reverse((OrderedFloat(cos_sim), j)));
+                    if heap.len() > top_k as usize {
+                        heap.pop();
                     }
                 }
 
-                // Convert to sorted vec (highest similarity first)
-                let mut results: Vec<_> = heap.into_iter().collect();
-                results.sort_by(|a, b| b.0.0.partial_cmp(&a.0.0).unwrap()); // Descending order
-                results
+                // Convert to descending order
+                let mut results: Vec<_> = heap
+                    .into_sorted_vec()
                     .into_iter()
-                    .map(|(score, idx)| (idx, score.0.0))
-                    .collect()
+                    .map(|Reverse((score, idx))| (idx, score.into_inner()))
+                    .collect();
+                results.reverse();
+                results
             })
-            .collect::<Vec<_>>();
+            .collect();
 
-        // Add batch results to overall results
         all_results.extend(batch_results);
-
-        // Update progress bar
-        pb_search.set_position(batch_end as u64);
+        progress.set_position(batch_end as u64);
     }
 
-    pb_search.finish_with_message("✓ Brute force computation complete!");
+    all_results
+}
 
-    (queries, all_results)
+/// Build HNSW index from vectors
+fn build_index(vectors: &Array2<f32>, graph: &mut Graph, ef_construction: u16, total: usize) {
+    let progress = ProgressBar::new(total as u64).with_style(progress_style("Indexing vectors"));
+    let counter = Arc::new(AtomicUsize::new(0));
+    let progress_clone = progress.clone();
+
+    vectors.axis_iter(Axis(0)).for_each(|vector| {
+        graph.insert(vector.as_slice().unwrap(), ef_construction);
+        let count = counter.fetch_add(1, Ordering::Relaxed) + 1;
+        if count.is_multiple_of(1_000) {
+            progress_clone.set_position(count as u64);
+        }
+    });
+
+    progress.finish_with_message(format!(
+        "✓ Indexed {} vectors in {:?}!",
+        total,
+        progress.elapsed()
+    ));
+}
+
+/// Search all queries using HNSW index
+fn search_queries(
+    queries: &Array2<f32>,
+    graph: &Graph,
+    ef_search: u16,
+    top_k: u16,
+) -> Vec<Box<[snapvec::SearchResult]>> {
+    queries
+        .axis_iter(Axis(0))
+        .map(|query| graph.search(query.as_slice().unwrap(), ef_search, top_k))
+        .collect()
+}
+
+/// Calculate recall percentage between HNSW and ground truth results
+fn calculate_recall(
+    ground_truth: &[Vec<(usize, f32)>],
+    hnsw_results: &[Box<[snapvec::SearchResult]>],
+    top_k: u16,
+) -> f32 {
+    let total_matches = ground_truth
+        .iter()
+        .zip(hnsw_results)
+        .map(|(gt, results)| {
+            let gt_set: HashSet<u32> = gt.iter().map(|(id, _)| *id as u32).collect();
+            let result_set: HashSet<u32> = results
+                .iter()
+                .map(|res| res.node.0.get() - 1) // Convert to zero-based index
+                .collect();
+            gt_set.intersection(&result_set).count()
+        })
+        .sum::<usize>();
+
+    let perfect_matches = top_k as f32 * ground_truth.len() as f32;
+    (total_matches as f32 / perfect_matches) * 100.0
+}
+
+/// Measure queries per second (QPS)
+fn measure_throughput(
+    queries: &Array2<f32>,
+    graph: &Graph,
+    ef_search: u16,
+    top_k: u16,
+    total_queries: usize,
+) -> f32 {
+    let progress = ProgressBar::new(total_queries as u64)
+        .with_style(progress_style("Evaluating search performance"));
+    let counter = Arc::new(AtomicUsize::new(0));
+    let progress_clone = progress.clone();
+
+    let start = Instant::now();
+    queries.axis_iter(Axis(0)).par_bridge().for_each(|query| {
+        black_box(graph.search(query.as_slice().unwrap(), ef_search, top_k));
+        let count = counter.fetch_add(1, Ordering::Relaxed) + 1;
+        if count.is_multiple_of(1_000) {
+            progress_clone.set_position(count as u64);
+        }
+    });
+
+    let elapsed = start.elapsed();
+    progress.finish_with_message("✓ Performance evaluation complete!");
+
+    total_queries as f32 / elapsed.as_secs_f32()
+}
+
+/// Print final benchmark results
+fn print_results(recall: f32, qps: f32) {
+    println!("\n=== BENCHMARK RESULTS ===");
+    println!("Recall: {:.2}%", recall);
+    println!("QPS (Queries Per Second): {:.2}", qps);
+    println!("=========================");
+}
+
+/// Calculate batch size for memory-efficient processing
+fn calculate_batch_size(query_count: usize) -> usize {
+    match query_count {
+        0..=1000 => query_count,
+        1001..=10_000 => 500,
+        _ => 200,
+    }
+}
+
+/// Create consistent progress bar styling
+fn progress_style(task: &str) -> ProgressStyle {
+    ProgressStyle::default_bar()
+        .template(&format!(
+            "{{spinner:.green}} [{{elapsed_precise}}] [{{bar:40.cyan/blue}}] \
+             {{pos}}/{{len}} {} ({{percent}}%) ETA: {{eta}} [{{per_sec}}]",
+            task
+        ))
+        .unwrap()
+        .progress_chars("#>-")
 }

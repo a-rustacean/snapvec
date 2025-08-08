@@ -20,6 +20,6 @@ mod storage;
 pub struct NodeId(pub NonZeroU32);
 
 pub use backend::*;
-pub use graph::{Graph, Options};
+pub use graph::{Graph, Options, SearchResult};
 pub use metric::DistanceMetricKind;
 pub use storage::Quantization;

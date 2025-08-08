@@ -50,7 +50,7 @@ impl Default for Options {
 // 3. a `Handle<Node0>` can be used to index into raw vec arena, and quant vec arena, and vice-versa, the three sets are bijective.
 // 4. the level distribution is calculated by the `level_sampler::sample` function, which uses derterministic logic.
 // 5. to get a child of a node in the level [2, max_level], we simply have to subtract 1 from the handle, for level 1, the `vec` is the child handle (due to [3]).
-pub struct Graph<A: ArenaBackend, G> {
+pub struct Graph<A: ArenaBackend = ArenaBackendMemory, G = GraphOptionsBackendMemory> {
     options: Options,
     distance_metric: DistanceMetric,
     nodes0_arena: Arena<Node0, A>,
