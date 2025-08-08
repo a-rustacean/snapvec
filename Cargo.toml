@@ -1,0 +1,37 @@
+[package]
+name = "snapvec"
+version = "0.1.0"
+edition = "2024"
+authors = ["Dilshad <a-rustacean@outlook.com>"]
+license = "MIT"
+
+[dependencies]
+binary-heap-plus = "0.5"
+
+[dev-dependencies]
+anyhow = "1"
+bytemuck = "1"
+indicatif = { version = "0.18", features = ["rayon"] }
+memmap2 = "0.9"
+ndarray = { version = "0.16", features = ["blas"] }
+ndarray-rand = "0.15"
+ordered-float = "5"
+rayon = "1"
+rand = "0.9"
+
+# macOS configuration
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+blas-src = { version = "0.11", features = ["accelerate"] }
+
+# Linux configuration
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+blas-src = { version = "0.11", features = ["openblas"] }
+
+[profile.release]
+opt-level = 3        # Max optimization
+lto = "fat"          # Link Time Optimization (best performance)
+codegen-units = 1    # Fewer units = better optimization, slower compile
+strip = true         # Remove debug symbols (Rust 1.70+)
+panic = "abort"      # Smaller binary, no unwinding
+incremental = false  # Disable incremental compilation for final builds
+
