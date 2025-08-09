@@ -151,22 +151,22 @@ fn align_up(size: usize, alignment: usize) -> usize {
 }
 
 pub trait DynAlloc {
-    type Metadata: Clone + Copy;
-    type Args;
+    type Metadata: Clone + Copy; // Shared object metadata
+    type Args; // Per-object initialization data
 
-    const ALIGN: usize;
+    const ALIGN: usize; // Required object alignment
 
+    // Required methods
     fn size(metadata: Self::Metadata) -> usize;
+    fn ptr_metadata(metadata: Self::Metadata) -> <Self as Pointee>::Metadata;
+    unsafe fn new_at(ptr: *mut u8, metadata: Self::Metadata, args: Self::Args);
 
+    // Provided method
     #[inline(always)]
     fn size_aligned(metadata: Self::Metadata) -> usize {
         let size = Self::size(metadata);
         align_up(size, Self::ALIGN)
     }
-
-    fn ptr_metadata(metadata: Self::Metadata) -> <Self as Pointee>::Metadata;
-
-    unsafe fn new_at(ptr: *mut u8, metadata: Self::Metadata, args: Self::Args);
 }
 
 pub struct Arena<T: DynAlloc + ?Sized, B> {
