@@ -83,6 +83,7 @@ struct Chunk<T: DynAlloc + ?Sized> {
 impl<T: DynAlloc + ?Sized> Chunk<T> {
     unsafe fn new<B: ArenaBackend>(
         backend: &mut B,
+        chunk_id: u32,
         item_size: usize,
         item_align: usize,
         chunk_len: usize,
@@ -93,7 +94,7 @@ impl<T: DynAlloc + ?Sized> Chunk<T> {
                 item_align.max(CACHE_LINE_SIZE),
             )
         };
-        let ptr = unsafe { backend.alloc(layout) };
+        let ptr = unsafe { backend.alloc(chunk_id, layout) };
 
         unsafe {
             ptr.write_bytes(0, item_size * chunk_len);
@@ -195,6 +196,7 @@ impl<T: DynAlloc + ?Sized, B: ArenaBackend> Arena<T, B> {
                 self.chunks.push(unsafe {
                     Chunk::new(
                         &mut self.backend,
+                        self.chunks.len() as u32,
                         T::size_aligned(self.metadata),
                         T::ALIGN,
                         self.chunk_len,

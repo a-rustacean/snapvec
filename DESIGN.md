@@ -103,7 +103,7 @@ pub struct Handle<T: ?Sized> {
 ### Backend System
 ```rust
 pub trait ArenaBackend {
-    unsafe fn alloc(&mut self, layout: Layout) -> NonNull<u8>;
+    unsafe fn alloc(&mut self, chunk_id: u32, layout: Layout) -> NonNull<u8>;
     unsafe fn dealloc(&mut self, ptr: NonNull<u8>, layout: Layout);
     fn flush(&mut self);
 }

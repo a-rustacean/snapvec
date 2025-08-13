@@ -18,7 +18,7 @@ pub trait ArenaBackend {
     /// Implementations must document:
     /// - The lifetime/validity guarantees of allocated memory
     /// - Required conditions before memory may be reused
-    unsafe fn alloc(&mut self, layout: Layout) -> NonNull<u8>;
+    unsafe fn alloc(&mut self, chunk_id: u32, layout: Layout) -> NonNull<u8>;
 
     /// # Safety
     ///
@@ -57,7 +57,7 @@ impl<A: Allocator> ArenaBackend for ArenaBackendMemory<A> {
     ///    - Explicit [`ArenaBackendMemory::dealloc`] call OR
     ///    - Arena destruction
     /// 4. Preserving allocator's defined memory lifetime semantics
-    unsafe fn alloc(&mut self, layout: Layout) -> NonNull<u8> {
+    unsafe fn alloc(&mut self, _chunk_id: u32, layout: Layout) -> NonNull<u8> {
         let ptr = match self.alloc.allocate(layout) {
             Ok(ptr) => ptr,
             Err(_) => handle_alloc_error(layout),
