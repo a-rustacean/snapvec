@@ -1,4 +1,4 @@
-#[cfg(use_scalar_f16)]
+#[cfg(f16_use_scalar)]
 fn dot_product_f16_scalar(a: &[f16], b: &[f16]) -> f32 {
     let mut sum = 0.0f32;
     for i in 0..a.len() {
@@ -7,7 +7,7 @@ fn dot_product_f16_scalar(a: &[f16], b: &[f16]) -> f32 {
     sum
 }
 
-#[cfg(use_avx2_f16)]
+#[cfg(f16_use_avx2)]
 #[target_feature(enable = "avx2,f16c")]
 unsafe fn dot_product_f16_avx2(a: &[f16], b: &[f16]) -> f32 {
     #[cfg(target_arch = "x86")]
@@ -56,7 +56,7 @@ unsafe fn dot_product_f16_avx2(a: &[f16], b: &[f16]) -> f32 {
     total
 }
 
-#[cfg(use_sse2_f16)]
+#[cfg(f16_use_sse2)]
 #[target_feature(enable = "sse2,f16c")]
 unsafe fn dot_product_f16_sse2(a: &[f16], b: &[f16]) -> f32 {
     #[cfg(target_arch = "x86")]
@@ -103,7 +103,7 @@ unsafe fn dot_product_f16_sse2(a: &[f16], b: &[f16]) -> f32 {
     total
 }
 
-#[cfg(use_neon_f16)]
+#[cfg(f16_use_neon)]
 #[target_feature(enable = "neon")]
 unsafe fn dot_product_f16_neon(a: &[f16], b: &[f16]) -> f32 {
     use core::arch::aarch64::*;
@@ -152,22 +152,22 @@ unsafe fn dot_product_f16_neon(a: &[f16], b: &[f16]) -> f32 {
 pub fn dot_product_f16(a: &[f16], b: &[f16]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
 
-    #[cfg(use_avx2_f16)]
+    #[cfg(f16_use_avx2)]
     {
         unsafe { dot_product_f16_avx2(a, b) }
     }
 
-    #[cfg(use_sse2_f16)]
+    #[cfg(f16_use_sse2)]
     {
         unsafe { dot_product_f16_sse2(a, b) }
     }
 
-    #[cfg(use_neon_f16)]
+    #[cfg(f16_use_neon)]
     {
         unsafe { dot_product_f16_neon(a, b) }
     }
 
-    #[cfg(use_scalar_f16)]
+    #[cfg(f16_use_scalar)]
     {
         dot_product_f16_scalar(a, b)
     }
