@@ -12,6 +12,7 @@ mod fixedset;
 mod graph;
 mod handle;
 mod level_sampler;
+mod mem_project;
 mod metric;
 mod node;
 mod storage;

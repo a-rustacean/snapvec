@@ -17,6 +17,7 @@ use crate::{
     fixedset::FixedSet,
     handle::Handle,
     level_sampler,
+    mem_project::MemProject,
     metric::{DistanceMetric, DistanceMetricKind, magnitude_f32},
     node::{Neighbors, Node0, Node0Handle, Node1, Node1Handle, VecHandle},
     storage::{QuantVec, Quantization, RawVec},
@@ -524,6 +525,10 @@ impl<A: ArenaBackend, G: GraphOptionsBackend> Graph<A, G> {
         self.nodes1_arena.flush();
         self.backend.flush();
     }
+
+    pub fn project_memory_usage(&self, num_vectors: u32) -> u64 {
+        Self::mem_project((self.options.clone(), num_vectors)) + size_of::<Self>() as u64
+    }
 }
 
 impl<A: ArenaBackend, G> Drop for Graph<A, G> {
@@ -533,5 +538,25 @@ impl<A: ArenaBackend, G> Drop for Graph<A, G> {
         self.nodes1_arena.clear(last_idx + last_level as u32);
         self.quant_vec_arena.clear(self.id_counter);
         self.raw_vec_arena.clear(self.id_counter);
+    }
+}
+
+impl<A: ArenaBackend, G: GraphOptionsBackend> MemProject for Graph<A, G> {
+    // (options, number of vectors)
+    type State = (Options, u32);
+
+    fn mem_project((options, num_vectors): Self::State) -> u64 {
+        let num_vectors = num_vectors + 1; // include root
+
+        let (last_idx, last_level) = level_sampler::sample(options.max_level, num_vectors);
+        let node1_arena_len = last_idx as u32 + last_level as u32;
+        // node0 arena
+        <Arena<Node0, A>>::mem_project((1000, num_vectors , options.m0))
+        // node1 arena
+        + <Arena<Node1, A>>::mem_project((1000, node1_arena_len, options.m))
+        // raw vec arena
+        + <Arena<RawVec, A>>::mem_project((1000, num_vectors , options.dims))
+        // quant vec arena
+        + <Arena<QuantVec, A>>::mem_project((1000, num_vectors , (options.quantization, options.dims)))
     }
 }

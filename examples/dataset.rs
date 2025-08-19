@@ -38,6 +38,35 @@ fn main() -> Result<()> {
 
     let mut rng = StdRng::from_seed([1; 32]);
 
+    let options = Options {
+        m: M,
+        m0: M0,
+        dims: DIMS,
+        max_level: MAX_LEVEL,
+        quantization: QUANTIZATION,
+        metric: DistanceMetricKind::Cos,
+    };
+
+    let mut graph = Graph::new(options);
+    let graph_memory_usage = graph.project_memory_usage(NUM_VECTORS as u32);
+    let corpus_memory_usage = NUM_VECTORS as u64 * DIMS as u64 * 4;
+
+    println!("\n================================================");
+    println!("  Estimated memory usage:");
+    println!(
+        "    Corpus: {:.2} GiB",
+        corpus_memory_usage as f32 / (1024.0 * 1024.0 * 1024.0)
+    );
+    println!(
+        "     Graph: {:.2} GiB",
+        graph_memory_usage as f32 / (1024.0 * 1024.0 * 1024.0)
+    );
+    println!(
+        "     Total: {:.2} GiB",
+        (corpus_memory_usage + graph_memory_usage) as f32 / (1024.0 * 1024.0 * 1024.0)
+    );
+    println!("================================================\n");
+
     // ==============================
     // Data Loading
     // ==============================
@@ -52,17 +81,9 @@ fn main() -> Result<()> {
     // ==============================
     // Index Construction
     // ==============================
-    let options = Options {
-        m: M,
-        m0: M0,
-        dims: DIMS,
-        max_level: MAX_LEVEL,
-        quantization: QUANTIZATION,
-        metric: DistanceMetricKind::Cos,
-    };
-
-    let mut graph = Graph::new(options);
     build_index(&vectors, &mut graph, EF_CONSTRUCTION, NUM_VECTORS);
+
+    drop(vectors);
 
     // ==============================
     // Search & Evaluation

@@ -8,7 +8,7 @@ use core::{
 
 use alloc::vec::Vec;
 
-use crate::{backend::ArenaBackend, handle::Handle};
+use crate::{backend::ArenaBackend, handle::Handle, mem_project::MemProject};
 
 #[cfg(any(
     target_arch = "x86_64",
@@ -139,6 +139,17 @@ impl<T: DynAlloc + ?Sized> Chunk<T> {
 
 unsafe impl<T: Send + DynAlloc + ?Sized> Send for Chunk<T> {}
 unsafe impl<T: Sync + DynAlloc + ?Sized> Sync for Chunk<T> {}
+
+impl<T: DynAlloc + ?Sized> MemProject for Chunk<T> {
+    // (item_size, item_len)
+    type State = (usize, usize);
+
+    fn mem_project((item_size, chunk_len): Self::State) -> u64 {
+        let size = item_size * chunk_len;
+
+        size as u64
+    }
+}
 
 fn align_up(size: usize, alignment: usize) -> usize {
     debug_assert!(alignment != 0, "Alignment must be non-zero");
@@ -290,6 +301,18 @@ impl<T: DynAlloc + ?Sized, B: ArenaBackend> IndexMut<Handle<T>> for Arena<T, B> 
                 T::ptr_metadata(self.metadata),
             )
         }
+    }
+}
+
+impl<T: DynAlloc + ?Sized, B> MemProject for Arena<T, B> {
+    // (chunk_size, number of allocations, metadata)
+    type State = (usize, u32, T::Metadata);
+
+    fn mem_project((chunk_size, num_allocs, metadata): Self::State) -> u64 {
+        <Vec<Chunk<T>>>::mem_project((
+            (T::size_aligned(metadata), chunk_size),
+            (num_allocs as usize).div_ceil(chunk_size),
+        ))
     }
 }
 
