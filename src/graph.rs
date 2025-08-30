@@ -10,10 +10,7 @@ use binary_heap_plus::BinaryHeap;
 use crate::{
     NodeId,
     arena::{Arena, DynAlloc},
-    backend::{
-        ArenaBackend, ArenaBackendMemory, GraphBackend, GraphOptionsBackend,
-        GraphOptionsBackendMemory,
-    },
+    backend::{ArenaBackend, ArenaBackendMemory, GraphBackend},
     fixedset::FixedSet,
     handle::Handle,
     level_sampler,
@@ -51,7 +48,7 @@ impl Default for Options {
 // 3. a `Handle<Node0>` can be used to index into raw vec arena, and quant vec arena, and vice-versa, the three sets are bijective.
 // 4. the level distribution is calculated by the `level_sampler::sample` function, which uses derterministic logic.
 // 5. to get a child of a node in the level [2, max_level], we simply have to subtract 1 from the handle, for level 1, the `vec` is the child handle (due to [3]).
-pub struct Graph<A: ArenaBackend = ArenaBackendMemory, G = GraphOptionsBackendMemory> {
+pub struct Graph<A: ArenaBackend = ArenaBackendMemory> {
     options: Options,
     distance_metric: DistanceMetric,
     nodes0_arena: Arena<Node0, A>,
@@ -60,7 +57,6 @@ pub struct Graph<A: ArenaBackend = ArenaBackendMemory, G = GraphOptionsBackendMe
     quant_vec_arena: Arena<QuantVec, A>,
     top_level_root_node: Node1Handle,
     pub(crate) id_counter: u32,
-    backend: G,
 }
 
 #[repr(C, align(4))]
@@ -85,14 +81,14 @@ pub struct SearchResult {
     pub score: f32,
 }
 
-impl Graph<ArenaBackendMemory, GraphOptionsBackendMemory> {
+impl Graph<ArenaBackendMemory> {
     pub fn new(options: Options) -> Self {
         Self::new_with_backend(options, GraphBackend::default())
     }
 }
 
-impl<A: ArenaBackend, G: GraphOptionsBackend> Graph<A, G> {
-    pub fn new_with_backend(options: Options, backend: GraphBackend<A, G>) -> Self {
+impl<A: ArenaBackend> Graph<A> {
+    pub fn new_with_backend(options: Options, backend: GraphBackend<A>) -> Self {
         let mut nodes0_arena = Arena::new(1000, options.m0, backend.nodes0);
         let mut nodes1_arena = Arena::new(1000, options.m, backend.nodes1);
         let mut raw_vec_arena = Arena::new(1000, options.dims, backend.raw_vec);
@@ -129,7 +125,6 @@ impl<A: ArenaBackend, G: GraphOptionsBackend> Graph<A, G> {
             quant_vec_arena,
             top_level_root_node: prev_node,
             id_counter: 1,
-            backend: backend.options,
         }
     }
 
@@ -513,17 +508,11 @@ impl<A: ArenaBackend, G: GraphOptionsBackend> Graph<A, G> {
         results.into_boxed_slice()
     }
 
-    pub fn save(&mut self) {
-        self.backend.save_options(&self.options);
-        self.backend.save_id_counter(self.id_counter);
-    }
-
     pub fn flush(&mut self) {
         self.raw_vec_arena.flush();
         self.quant_vec_arena.flush();
         self.nodes0_arena.flush();
         self.nodes1_arena.flush();
-        self.backend.flush();
     }
 
     pub fn project_memory_usage(&self, num_vectors: u32) -> u64 {
@@ -531,7 +520,7 @@ impl<A: ArenaBackend, G: GraphOptionsBackend> Graph<A, G> {
     }
 }
 
-impl<A: ArenaBackend, G> Drop for Graph<A, G> {
+impl<A: ArenaBackend> Drop for Graph<A> {
     fn drop(&mut self) {
         self.nodes0_arena.clear(self.id_counter);
         let (last_idx, last_level) = level_sampler::sample(self.options.max_level, self.id_counter);
@@ -541,7 +530,7 @@ impl<A: ArenaBackend, G> Drop for Graph<A, G> {
     }
 }
 
-impl<A: ArenaBackend, G: GraphOptionsBackend> MemProject for Graph<A, G> {
+impl<A: ArenaBackend> MemProject for Graph<A> {
     // (options, number of vectors)
     type State = (Options, u32);
 

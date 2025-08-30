@@ -2,8 +2,6 @@ use core::{alloc::Layout, ptr::NonNull};
 
 use alloc::alloc::{Allocator, Global, handle_alloc_error};
 
-use crate::Options;
-
 pub trait ArenaBackend {
     /// # Safety
     ///
@@ -95,58 +93,20 @@ impl Default for ArenaBackendMemory {
     }
 }
 
-pub trait GraphOptionsBackend {
-    fn save_options(&mut self, options: &Options);
-    fn load_options(&self) -> Options;
-
-    fn save_id_counter(&mut self, counter: u32);
-    fn load_id_counter(&self) -> u32;
-
-    fn flush(&mut self);
-}
-
-#[derive(Default)]
-pub struct GraphOptionsBackendMemory {
-    options: Options,
-    id_counter: u32,
-}
-
-impl GraphOptionsBackend for GraphOptionsBackendMemory {
-    fn save_options(&mut self, options: &Options) {
-        self.options = options.clone();
-    }
-
-    fn load_options(&self) -> Options {
-        self.options.clone()
-    }
-
-    fn save_id_counter(&mut self, counter: u32) {
-        self.id_counter = counter;
-    }
-
-    fn load_id_counter(&self) -> u32 {
-        self.id_counter
-    }
-
-    fn flush(&mut self) {}
-}
-
-pub struct GraphBackend<A: ArenaBackend, G: GraphOptionsBackend> {
+pub struct GraphBackend<A: ArenaBackend> {
     pub raw_vec: A,
     pub quant_vec: A,
     pub nodes0: A,
     pub nodes1: A,
-    pub options: G,
 }
 
-impl Default for GraphBackend<ArenaBackendMemory, GraphOptionsBackendMemory> {
+impl Default for GraphBackend<ArenaBackendMemory> {
     fn default() -> Self {
         Self {
             raw_vec: ArenaBackendMemory::default(),
             quant_vec: ArenaBackendMemory::default(),
             nodes0: ArenaBackendMemory::default(),
             nodes1: ArenaBackendMemory::default(),
-            options: GraphOptionsBackendMemory::default(),
         }
     }
 }
