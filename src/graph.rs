@@ -538,7 +538,7 @@ impl<A: ArenaBackend> MemProject for Graph<A> {
         let num_vectors = num_vectors + 1; // include root
 
         let (last_idx, last_level) = level_sampler::sample(options.max_level, num_vectors);
-        let node1_arena_len = last_idx as u32 + last_level as u32;
+        let node1_arena_len = last_idx + last_level as u32;
         // node0 arena
         <Arena<Node0, A>>::mem_project((1000, num_vectors , options.m0))
         // node1 arena

@@ -1,5 +1,5 @@
 #![no_std]
-#![feature(ptr_metadata, f16, new_zeroed_alloc, maybe_uninit_fill, allocator_api)]
+#![feature(ptr_metadata, f16, maybe_uninit_fill, allocator_api)]
 #![cfg_attr(target_os = "macos", feature(stdarch_neon_f16))]
 
 use core::num::NonZeroU32;

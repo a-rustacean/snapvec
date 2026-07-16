@@ -34,14 +34,9 @@ fn main() {
                 println!("cargo:rustc-cfg=f16_use_scalar");
             }
         }
-        "aarch64" => {
-            if target_features.contains("neon") {
-                println!("cargo:rustc-cfg=use_neon");
-                println!("cargo:rustc-cfg=f16_use_neon");
-            } else {
-                println!("cargo:rustc-cfg=use_scalar");
-                println!("cargo:rustc-cfg=f16_use_scalar");
-            }
+        "aarch64" if target_features.contains("neon") => {
+            println!("cargo:rustc-cfg=use_neon");
+            println!("cargo:rustc-cfg=f16_use_neon");
         }
         _ => {
             println!("cargo:rustc-cfg=use_scalar");
